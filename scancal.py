@@ -49,7 +49,7 @@ MM_PER_INCH = 25.4
 # ------------------------------------------------------------ fixed design
 PLATE_W = 100.0        # mm, X (short edge)
 PLATE_H = 120.0        # mm, Y (long edge)
-THICK = 2.0            # mm
+THICK = 3.0            # mm
 CHAMFER = 0.5          # mm bottom-edge inset (swallows elephant foot)
 CHAMFER_H = 1.0        # mm height the chamfer rises over
 FRAME = 8.0            # mm outer frame width
@@ -167,8 +167,18 @@ def detect_plate(gray):
         u = ab / L
         rel = pts - a
         along = rel @ u
-        perp = np.abs(rel @ np.array([-u[1], u[0]]))
-        sel = pts[(along > 0.1 * L) & (along < 0.9 * L) & (perp < 4)]
+        perp = rel @ np.array([-u[1], u[0]])
+        band = (along > 0.1 * L) & (along < 0.9 * L)
+        sel = pts[band & (np.abs(perp) < 25)]          # wide first gate
+        if len(sel) < 20:
+            raise SystemExit("too few edge points; scan resolution too low?")
+        vx, vy, x0, y0 = cv2.fitLine(sel.astype(np.float32),
+                                     cv2.DIST_HUBER, 0, 0.01, 0.01).flatten()
+        # re-gate on residuals to the fitted line, then refit
+        nvec = np.array([-vy, vx])
+        r = (pts - (x0, y0)) @ nvec
+        mad = max(1.4826 * np.median(np.abs(r[band & (np.abs(perp) < 25)])), 1.0)
+        sel = pts[band & (np.abs(r) < 3 * mad)]
         if len(sel) < 20:
             raise SystemExit("too few edge points; scan resolution too low?")
         vx, vy, x0, y0 = cv2.fitLine(sel.astype(np.float32),

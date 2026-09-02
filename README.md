@@ -1,4 +1,3 @@
-# scancal — flatbed scanner dimensional calibration
 
 Calibrates a flatbed scanner using a 3D-printed reference plate, so scans
 can be imported into CAD dimensionally accurate (e.g., modeling a PCB or
