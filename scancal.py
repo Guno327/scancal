@@ -96,9 +96,15 @@ def _box(x0, x1, y0, y1, z0, z1):
 
 def cmd_generate(args):
     w, h, t, c, ch = PLATE_W, PLATE_H, THICK, CHAMFER, CHAMFER_H
-    # frame sides: cross-section chamfered on the outer bottom corner
-    lo_prof = [(c, 0), (FRAME, 0), (FRAME, t), (0, t), (0, ch)]
-    hi_prof = lambda d: [(d - FRAME, 0), (d - c, 0), (d, ch), (d, t), (d - FRAME, t)]
+    # frame sides: cross-section chamfered on BOTH bottom corners (outer edge
+    # for caliper/silhouette accuracy, inner edge so opening silhouettes are
+    # elephant-foot-free too)
+    lo_prof = [(c, 0), (FRAME - c, 0), (FRAME, ch), (FRAME, t), (0, t), (0, ch)]
+    hi_prof = lambda d: [(d - FRAME + c, 0), (d - c, 0), (d, ch), (d, t),
+                         (d - FRAME, t), (d - FRAME, ch)]
+    # rib cross-section: chamfered on both bottom edges
+    rib_prof = lambda p0: [(p0 + c, 0), (p0 + RIB - c, 0), (p0 + RIB, ch),
+                           (p0 + RIB, t), (p0, t), (p0, ch)]
     tris = []
     tris += _prism(lo_prof, 0, h, "y")            # left  (x: 0..FRAME)
     tris += _prism(hi_prof(w), 0, h, "y")         # right (x: w-FRAME..w)
@@ -106,10 +112,10 @@ def cmd_generate(args):
     tris += _prism(hi_prof(h), 0, w, "x")         # back  (y: h-FRAME..h)
     for i in range(CELLS_X - 1):                  # ribs along Y
         x0 = FRAME + (i + 1) * CELL_W + i * RIB
-        tris += _box(x0, x0 + RIB, FRAME - 1, h - FRAME + 1, 0, t)
+        tris += _prism(rib_prof(x0), FRAME - 1, h - FRAME + 1, "y")
     for j in range(CELLS_Y - 1):                  # ribs along X
         y0 = FRAME + (j + 1) * CELL_H + j * RIB
-        tris += _box(FRAME - 1, w - FRAME + 1, y0, y0 + RIB, 0, t)
+        tris += _prism(rib_prof(y0), FRAME - 1, w - FRAME + 1, "x")
 
     with open(args.output, "w") as f:
         f.write("solid scancal_plate\n")
