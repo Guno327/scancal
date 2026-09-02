@@ -10,6 +10,54 @@ Single file: `scancal.py`
 pip install numpy opencv-python-headless
 ```
 
+### Nix
+
+The repo ships a flake that packages `scancal` as a CLI (python + numpy +
+opencv wrapped, no pip):
+
+```
+nix run .          # run directly from the repo
+nix profile install .
+```
+
+To install system-wide on NixOS via your system flake:
+
+1. Add the input in your system `flake.nix`:
+
+```nix
+inputs.scancal.url = "github:guno327/scancal";
+```
+
+2. Make sure `inputs` reaches your configuration — typical flake setups
+   pass it via `specialArgs`:
+
+```nix
+nixosConfigurations.<hostname> = nixpkgs.lib.nixosSystem {
+  specialArgs = { inherit inputs; };
+  modules = [ ./configuration.nix ];
+};
+```
+
+3. In your configuration (with `inputs` in the module arguments):
+
+```nix
+{ pkgs, inputs, ... }: {
+  environment.systemPackages = [
+    inputs.scancal.packages.${pkgs.system}.default
+  ];
+}
+```
+
+4. Rebuild:
+
+```
+sudo nixos-rebuild switch --flake .
+```
+
+`scancal` is now on PATH for all users. A local `path:` input isn't copied
+live — re-run `nix flake update scancal` (or `nix flake lock --update-input
+scancal` on older nix) after changing the script, then rebuild.
+
 ## Workflow
 
 ### 1. Generate the reference plate
