@@ -475,6 +475,53 @@ def _smooth_closed(poly, k=7):
                     axis=1)
 
 
+def _fit_circle(pts, tol=0.08):
+    """RANSAC circle fit at fixed tolerance (mm). Occlusion deforms hole
+    contours with chord cuts rather than sparse outliers, so consensus on
+    the true arc beats least squares on everything. ok requires a majority
+    of points on the arc and >=150 deg coverage, so slots and rectangles
+    (whose rounded ends cover <180 deg and a minority of points) don't
+    pass."""
+    def kasa(p):
+        A = np.column_stack([2 * p[:, 0], 2 * p[:, 1], np.ones(len(p))])
+        b = (p ** 2).sum(axis=1)
+        (cx, cy, c), _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+        return cx, cy, np.sqrt(c + cx * cx + cy * cy)
+
+    n = len(pts)
+    rng = np.random.default_rng(0)
+    best, best_inl = None, None
+    for _ in range(200):
+        i = rng.choice(n, 3, replace=False)
+        try:
+            cx, cy, r = kasa(pts[i])
+        except np.linalg.LinAlgError:
+            continue
+        if not np.isfinite(r) or r > 25:
+            continue
+        d = np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r)
+        inl = d < tol
+        if best_inl is None or inl.sum() > best_inl.sum():
+            best, best_inl = (cx, cy, r), inl
+    if best is None or best_inl.sum() < 10:
+        return 0, 0, 0, False
+    for _ in range(3):
+        cx, cy, r = kasa(pts[best_inl])
+        d = np.abs(np.hypot(pts[:, 0] - cx, pts[:, 1] - cy) - r)
+        best_inl = d < tol
+    inl = best_inl
+    if inl.sum() < 10:
+        return 0, 0, 0, False
+    rms = float(np.sqrt((d[inl] ** 2).mean()))
+    ang = np.sort(np.arctan2(pts[inl, 1] - cy, pts[inl, 0] - cx))
+    gaps = np.diff(np.concatenate([ang, [ang[0] + 2 * np.pi]]))
+    coverage = 2 * np.pi - gaps.max()
+    ok = (rms <= 0.05 and 0.3 <= r <= 25 and
+          ((inl.mean() >= 0.55 and coverage >= np.radians(150)) or
+           (inl.mean() >= 0.35 and coverage >= np.radians(210))))
+    return float(cx), float(cy), float(r), ok
+
+
 def _outline_dxf(img, path, dpi, min_hole_mm):
     import cv2
     gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -493,6 +540,7 @@ def _outline_dxf(img, path, dpi, min_hole_mm):
                      if hier[k][3] == part
                      and cv2.contourArea(contours[k]) >= min_hole_px_a]
     polys = []
+    circles = []
     h_img = gray.shape[0]
     for k in keep:
         p = contours[k].reshape(-1, 2).astype(np.float64)
@@ -500,6 +548,12 @@ def _outline_dxf(img, path, dpi, min_hole_mm):
             continue
         p = _refine_subpixel(gray, p)
         p = _smooth_closed(p)
+        mm_all = np.column_stack([p[:, 0] * mmpx, (h_img - p[:, 1]) * mmpx])
+        if k != part:
+            cx, cy, r, ok = _fit_circle(mm_all)
+            if ok:
+                circles.append((cx, cy, r))
+                continue
         p = cv2.approxPolyDP(p.astype(np.float32), 0.75, True).reshape(-1, 2)
         mm = np.column_stack([p[:, 0] * mmpx, (h_img - p[:, 1]) * mmpx])
         polys.append(mm)
@@ -511,11 +565,17 @@ def _outline_dxf(img, path, dpi, min_hole_mm):
             for x, y in mm:
                 f.write(f"0\nVERTEX\n8\n0\n10\n{x:.4f}\n20\n{y:.4f}\n")
             f.write("0\nSEQEND\n")
+        for cx, cy, r in circles:
+            f.write(f"0\nCIRCLE\n8\n0\n10\n{cx:.4f}\n20\n{cy:.4f}\n40\n{r:.4f}\n")
         f.write("0\nENDSEC\n0\nEOF\n")
 
     outer = polys[0]
-    print(f"wrote outline: {path} — 1 outer contour + {len(polys) - 1} "
-          f"hole(s) >= {min_hole_mm:g} mm, in true mm")
+    print(f"wrote outline: {path} — 1 outer contour, {len(circles)} fitted "
+          f"circle(s), {len(polys) - 1} non-circular contour(s), features "
+          f">= {min_hole_mm:g} mm, in true mm")
+    if circles:
+        print("  circle diameters:",
+              sorted(round(2 * r, 2) for _, _, r in circles))
     print(f"  outer bbox: {np.ptp(outer[:, 0]):.2f} x {np.ptp(outer[:, 1]):.2f} mm")
     print("  holes/interior features are the trustworthy part; verify "
           "critical OUTER dimensions with calipers (edge shadow/halo)")
