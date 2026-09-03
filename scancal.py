@@ -223,9 +223,11 @@ def decompose(A, nominal):
     return K / nominal, sx / nominal - 1, sy / nominal - 1, skew, math.degrees(theta)
 
 
-def opening_residuals(gray, A, t, scale_meas, nominal):
-    """Diagnostic only: detect truss openings, compare centroids with design
-    positions under the outline-fitted affine."""
+def match_openings(gray, A, t, scale_meas, nominal):
+    """Detect truss openings and match their centroids to design positions
+    (predicted via the outline-fitted affine). Returns (ideal_mm, cents_px)
+    arrays or None. Centroids are immune to the scanner's edge-shadow bias,
+    so they are the primary geometry source for the calibration fit."""
     import cv2
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _, dark = cv2.threshold(blur, 0, 255,
@@ -254,18 +256,16 @@ def opening_residuals(gray, A, t, scale_meas, nominal):
     ideal = np.array(OPENING_CENTROIDS, float) * np.array(scale_meas)
     pred = ideal @ A.T + t
     tol = 0.35 * min(cell_px)
-    resid = []
-    for p in pred:
+    pairs_i, pairs_c = [], []
+    for i, p in enumerate(pred):
         d = np.linalg.norm(cents - p, axis=1)
         k = int(np.argmin(d))
         if d[k] < tol:
-            resid.append(cents[k] - p)
-    if len(resid) < 2:
+            pairs_i.append(ideal[i])
+            pairs_c.append(cents[k])
+    if len(pairs_i) < 4:
         return None
-    resid_um = np.linalg.norm(np.array(resid), axis=1) / nominal * 1000
-    return {"n": len(resid),
-            "rms_um": float(np.sqrt((resid_um ** 2).mean())),
-            "max_um": float(resid_um.max())}
+    return np.array(pairs_i), np.array(pairs_c)
 
 
 # ---------------------------------------------------------------- calibrate
@@ -305,19 +305,39 @@ def cmd_calibrate(args):
             raise SystemExit(f"{scan}: plate's long axis is along scan X; "
                              f"place the long edge along the scanner's long "
                              f"axis and rescan")
-        A, t, corner_resid_px = fit_plate(corners, w_mm, h_mm)
+        A0, t0, corner_resid_px = fit_plate(corners, w_mm, h_mm)
+        scale = (w_mm / PLATE_W, h_mm / PLATE_H)
+        pairs = match_openings(img, A0, t0, scale, nominal)
+        if pairs is None:
+            print(f"{scan}: warning: opening centroids not found — falling "
+                  f"back to outline fit (edge-shadow bias uncorrected)",
+                  file=sys.stderr)
+            A, t, fit_resid_um, n_open = A0, t0, None, 0
+        else:
+            ideal, cents = pairs
+            X = np.hstack([ideal, np.ones((len(ideal), 1))])
+            sol, _, _, _ = np.linalg.lstsq(X, cents, rcond=None)
+            A, t = sol[:2].T, sol[2]
+            resid = cents - (X @ sol)
+            resid_um = np.linalg.norm(resid, axis=1) / nominal * 1000
+            fit_resid_um = float(np.sqrt((resid_um ** 2).mean()))
+            n_open = len(ideal)
         K_rel, ex, ey, skew, rot = decompose(A, nominal)
         results.append((K_rel, ex, ey, skew, rot))
         line = (f"{scan}: X {ex * 100:+.3f}%  Y {ey * 100:+.3f}%  "
-                f"skew {skew:+.3f} deg  rot {rot:+.2f} deg  "
-                f"corner residual {corner_resid_px / nominal * 1000:.0f} um")
-        r = opening_residuals(img, A, t, (w_mm / PLATE_W, h_mm / PLATE_H),
-                              nominal)
-        if r is not None:
-            line += (f"\n    openings: {r['n']} matched, non-affine residual "
-                     f"RMS {r['rms_um']:.0f} um, max {r['max_um']:.0f} um")
-            if r["rms_um"] > 150:
+                f"skew {skew:+.3f} deg  rot {rot:+.2f} deg")
+        if fit_resid_um is not None:
+            line += (f"\n    fit on {n_open} opening centroids, non-affine "
+                     f"residual RMS {fit_resid_um:.0f} um")
+            if fit_resid_um > 150:
                 line += "  <- high: distortion beyond affine (or warped print)"
+            # outline vs centroid Y scale: difference = edge shadow width
+            _, _, ey0, _, _ = decompose(A0, nominal)
+            shadow_um = (ey0 - ey) * h_mm * 1000 / 2
+            if abs(shadow_um) > 100:
+                line += (f"\n    outline Y wider than centroid fit by "
+                         f"~{shadow_um:.0f} um/edge (illumination shadow — "
+                         f"expected, corrected)")
         print(line)
 
     K_rel = np.mean([r[0] for r in results], axis=0)

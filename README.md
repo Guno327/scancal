@@ -1,3 +1,4 @@
+# scancal — flatbed scanner dimensional calibration
 
 Calibrates a flatbed scanner using a 3D-printed reference plate, so scans
 can be imported into CAD dimensionally accurate (e.g., modeling a PCB or
@@ -24,14 +25,14 @@ To install system-wide on NixOS via your system flake:
 1. Add the input in your system `flake.nix`:
 
 ```nix
-inputs.scancal.url = "github:guno327/scancal";
+inputs.scancal.url = "github:gunnar/scancal";   # or "path:/home/gunnar/scancal"
 ```
 
 2. Make sure `inputs` reaches your configuration — typical flake setups
    pass it via `specialArgs`:
 
 ```nix
-nixosConfigurations.<hostname> = nixpkgs.lib.nixosSystem {
+nixosConfigurations.nixos-laptop = nixpkgs.lib.nixosSystem {
   specialArgs = { inherit inputs; };
   modules = [ ./configuration.nix ];
 };
@@ -74,21 +75,54 @@ direct measurements. Deliberately non-square so orientation is
 unambiguous. Because the design is fixed, no metadata travels with the
 STL — `calibrate` knows the geometry.
 
-The truss openings double as accuracy checks: `calibrate` detects their
-centroids and reports how far they deviate from the outline-fitted affine.
-That residual doesn't feed the correction — it tells you whether an affine
-is *sufficient* for your scanner. Low RMS (<~100 um) means yes; high RMS
-means non-affine distortion (or a warped print) that a global correction
-can't remove.
+The truss openings are not just structure — they are the primary
+measurement. The outline finds and orients the plate, but the calibration
+affine is fit to the six **opening centroids**: scanner illumination casts
+shadow bands on edges facing the transport direction, biasing the outline
+silhouette outward (on some scanners by ~1 mm per edge), while each
+opening is shadowed symmetrically so its centroid is unbiased. `calibrate`
+reports the centroid fit's non-affine residual — low RMS (<~100 um) means
+an affine describes your scanner well; high RMS that persists across
+lift-and-replace scans means non-affine distortion or a warped print. It
+also reports the outline-vs-centroid discrepancy as the measured shadow
+width per edge.
 
-Print it flat in a **dark color** (scans as a crisp silhouette against the
-white lid), chamfer side down as modeled. The bottom edge is inset by a
+Print it flat in a **dark, opaque color** (scans as a crisp silhouette
+against the white lid), chamfer side down as modeled. The bottom edge is inset by a
 built-in chamfer (0.5 mm rising over 1 mm) so elephant
 foot stays inside the nominal outline: the widest cross-section — what both
 the scan silhouette and caliper jaws register — is the clean top edge at
 nominal dimensions. No slicer compensation or deburring needed. When
 measuring, span the caliper jaws across the full plate thickness so they
 seat on the top edge.
+
+### Printing it well
+
+The plate is the reference — a warped or glowing print caps everything
+downstream. The plate is 3 mm thick and an open frame specifically to
+resist warping; help it with process:
+
+- **Opaque, dark filament.** Translucent material (e.g. natural PETG) lets
+  light bleed through and out of the edges: the silhouette goes soft and
+  shifts with illumination. Blackening a translucent print with marker or
+  matte paint on *every* face sort of works, but opaque black filament is
+  the reliable path.
+- **Cooling fan off** (or <=30%) after the first layer — asymmetric cooling
+  is the main source of warp in flat parts.
+- **Heated bed at the material's upper range** (PETG ~80-85 C) and let the
+  part cool to room temperature on the bed before removing it; popping it
+  off warm locks in a bow.
+- **100% infill**, alternating rectilinear — uniform stress beats sparse
+  infill lines pulling along one direction.
+- No drafts/open enclosure door mid-print.
+- Verify flatness on the scanner glass before calibrating: press gently on
+  the corners — any rocking means warp. Modest weight on the scanner lid
+  (a book or two) flattens mild warp during the scan; the openings check
+  will tell you if it wasn't enough.
+
+If the openings check reports high non-affine residual (>~100 um RMS) that
+*persists across lift-and-replace scans*, suspect the print (warp or
+elephant foot) before suspecting the scanner.
 
 ### 2. Measure the plate
 
