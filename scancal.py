@@ -416,6 +416,14 @@ def cmd_correct(args):
     border = 255 if src.ndim == 2 else (255,) * src.shape[2]
     out = cv2.warpAffine(src, M, tuple(size), flags=cv2.INTER_LANCZOS4,
                          borderValue=border)
+
+    if args.dxf:
+        _outline_dxf(out, args.dxf, dpi, args.min_hole)
+        if tail.get("mode") == "closed-loop":
+            print("note: closed-loop tailoring — dimensions are pre-distorted "
+                  "for the calibration printer, not true mm")
+        return
+
     cv2.imwrite(args.output, out)
 
     print(f"wrote corrected image: {args.output} ({size[0]}x{size[1]} px)")
@@ -424,6 +432,93 @@ def cmd_correct(args):
     if tail.get("mode") == "closed-loop":
         print("note: closed-loop tailoring — dimensions are pre-distorted "
               "for the calibration printer, not true mm")
+
+
+# ---------------------------------------------------------------- outline/dxf
+
+def _refine_subpixel(gray, poly):
+    """Shift each contour point to the gradient extremum along the local
+    normal (parabolic subpixel fit), searching +/-5 px around the coarse
+    threshold position. Reduces threshold/halo bias."""
+    import cv2
+    g = cv2.GaussianBlur(gray, (0, 0), 1.2).astype(np.float64)
+    h, w = g.shape
+    n = len(poly)
+    tang = np.roll(poly, -2, axis=0) - np.roll(poly, 2, axis=0)
+    tang /= np.maximum(np.linalg.norm(tang, axis=1, keepdims=True), 1e-9)
+    nrm = np.stack([-tang[:, 1], tang[:, 0]], axis=1)
+    offs = np.arange(-5, 6)
+    samp = poly[:, None, :] + nrm[:, None, :] * offs[None, :, None]
+    xs = np.clip(samp[..., 0], 0, w - 1)
+    ys = np.clip(samp[..., 1], 0, h - 1)
+    x0 = xs.astype(int); y0 = ys.astype(int)
+    x1 = np.minimum(x0 + 1, w - 1); y1 = np.minimum(y0 + 1, h - 1)
+    fx = xs - x0; fy = ys - y0
+    prof = (g[y0, x0] * (1 - fx) * (1 - fy) + g[y0, x1] * fx * (1 - fy) +
+            g[y1, x0] * (1 - fx) * fy + g[y1, x1] * fx * fy)
+    grad = np.abs(np.gradient(prof, axis=1))
+    k = grad[:, 1:-1].argmax(axis=1) + 1
+    i = np.arange(n)
+    gm, gl, gr = grad[i, k], grad[i, k - 1], grad[i, k + 1]
+    denom = gl - 2 * gm + gr
+    with np.errstate(divide="ignore", invalid="ignore"):
+        frac = np.where(np.abs(denom) > 1e-9, 0.5 * (gl - gr) / denom, 0.0)
+    frac = np.clip(frac, -0.5, 0.5)
+    return poly + nrm * (offs[k] + frac)[:, None]
+
+
+def _smooth_closed(poly, k=7):
+    kern = np.ones(k) / k
+    pad = k // 2
+    ext = np.vstack([poly[-pad:], poly, poly[:pad]])
+    return np.stack([np.convolve(ext[:, j], kern, "valid") for j in (0, 1)],
+                    axis=1)
+
+
+def _outline_dxf(img, path, dpi, min_hole_mm):
+    import cv2
+    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mmpx = MM_PER_INCH / dpi
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    contours, hier = cv2.findContours(bw, cv2.RETR_CCOMP,
+                                      cv2.CHAIN_APPROX_NONE)
+    if hier is None:
+        raise SystemExit("no part found in image")
+    hier = hier[0]
+    part = int(np.argmax([cv2.contourArea(c) for c in contours]))
+    min_hole_px_a = np.pi * (min_hole_mm / 2 / mmpx) ** 2
+    keep = [part] + [k for k in range(len(contours))
+                     if hier[k][3] == part
+                     and cv2.contourArea(contours[k]) >= min_hole_px_a]
+    polys = []
+    h_img = gray.shape[0]
+    for k in keep:
+        p = contours[k].reshape(-1, 2).astype(np.float64)
+        if len(p) < 12:
+            continue
+        p = _refine_subpixel(gray, p)
+        p = _smooth_closed(p)
+        p = cv2.approxPolyDP(p.astype(np.float32), 0.75, True).reshape(-1, 2)
+        mm = np.column_stack([p[:, 0] * mmpx, (h_img - p[:, 1]) * mmpx])
+        polys.append(mm)
+
+    with open(path, "w") as f:
+        f.write("0\nSECTION\n2\nENTITIES\n")
+        for mm in polys:
+            f.write("0\nPOLYLINE\n8\n0\n66\n1\n70\n1\n")
+            for x, y in mm:
+                f.write(f"0\nVERTEX\n8\n0\n10\n{x:.4f}\n20\n{y:.4f}\n")
+            f.write("0\nSEQEND\n")
+        f.write("0\nENDSEC\n0\nEOF\n")
+
+    outer = polys[0]
+    print(f"wrote outline: {path} — 1 outer contour + {len(polys) - 1} "
+          f"hole(s) >= {min_hole_mm:g} mm, in true mm")
+    print(f"  outer bbox: {np.ptp(outer[:, 0]):.2f} x {np.ptp(outer[:, 1]):.2f} mm")
+    print("  holes/interior features are the trustworthy part; verify "
+          "critical OUTER dimensions with calipers (edge shadow/halo)")
 
 
 # ---------------------------------------------------------------- tailor-stl
@@ -538,6 +633,11 @@ def main():
     r.add_argument("--dpi", type=float,
                    help="DPI of this scan (default: calibration DPI)")
     r.add_argument("-o", "--output", default="corrected.png")
+    r.add_argument("--dxf", metavar="OUT.dxf",
+                   help="extract part outline + holes and write a DXF in "
+                        "true mm instead of the corrected image")
+    r.add_argument("--min-hole", type=float, default=1.0, metavar="MM",
+                   help="ignore holes smaller than this diameter (default 1)")
     r.set_defaults(func=cmd_correct)
 
     s = sub.add_parser("tailor-stl", help="pre-scale an STL by the inverse "

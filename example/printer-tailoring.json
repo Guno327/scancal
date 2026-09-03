@@ -1,0 +1,22 @@
+{
+  "scancal_version": 4,
+  "type": "printer",
+  "created": "2026-09-02T22:39:13",
+  "printer_note": "",
+  "plate": {
+    "design_mm": [
+      100.0,
+      120.0
+    ],
+    "measured_x_mm": [
+      99.61,
+      99.56
+    ],
+    "measured_y_mm": [
+      119.56,
+      119.52
+    ]
+  },
+  "scale_error_pct_x": -0.415,
+  "scale_error_pct_y": -0.3833
+}

@@ -1,0 +1,37 @@
+{
+  "scancal_version": 4,
+  "created": "2026-09-02T22:39:13",
+  "scanner_note": "epson-v300",
+  "mode": "measured",
+  "calibration_dpi": 600.0,
+  "plate": {
+    "design_mm": [
+      100.0,
+      120.0
+    ],
+    "measured_x_mm": [
+      99.61,
+      99.56
+    ],
+    "measured_y_mm": [
+      119.56,
+      119.52
+    ]
+  },
+  "scans_used": 3,
+  "K_rel": [
+    [
+      1.00239716265434,
+      -0.004502240936477522
+    ],
+    [
+      2.179735313244637e-18,
+      1.0020155152842707
+    ]
+  ],
+  "scale_error_pct_x": 0.2397,
+  "scale_error_pct_y": 0.2026,
+  "scale_spread_pct_x": 0.081,
+  "scale_spread_pct_y": 0.023,
+  "skew_deg": -0.2574
+}
